@@ -1,1 +1,58 @@
+import numpy as np
+import pandas as pd
+from src.microstructure_model import compute_micro_price, compute_order_flow_imbalance
 
+
+def simulate_xbid_orderbook(
+    n_minutes: int = 120,
+    base_price: float = 85.0,
+    volatility: float = 0.45,
+    urgency_intensity: float = 1.0,
+    seed: int = 42
+) -> pd.DataFrame:
+    """
+    Simulates L2 continuous limit order book dynamics leading to Gate Closure.
+    """
+    np.random.seed(seed)
+    timestamps = pd.date_range(start="2026-08-22 18:00:00", periods=n_minutes, freq="min")
+
+    drift = np.cumsum(np.random.normal(0, volatility, n_minutes))
+    fundamental_price = base_price + drift
+
+    time_to_gate = np.linspace(n_minutes, 1, n_minutes)
+    urgency_factor = np.exp(-time_to_gate / (35.0 / urgency_intensity))
+
+    bid_spread = np.maximum(0.15, 0.35 + np.random.exponential(0.2, n_minutes) + (urgency_factor * 1.2))
+    ask_spread = np.maximum(0.15, 0.35 + np.random.exponential(0.2, n_minutes) + (urgency_factor * 1.2))
+
+    best_bid = fundamental_price - bid_spread
+    best_ask = fundamental_price + ask_spread
+    mid_price = (best_bid + best_ask) / 2.0
+    spread_eur = best_ask - best_bid
+
+    bid_depth_mw = np.maximum(2.0, np.random.poisson(14, n_minutes) + (1.0 - urgency_factor) * 18.0)
+    ask_depth_mw = np.maximum(2.0, np.random.poisson(14, n_minutes) + (urgency_factor) * 22.0)
+
+    ofi = compute_order_flow_imbalance(bid_depth_mw, ask_depth_mw)
+    micro_price = compute_micro_price(best_bid, best_ask, bid_depth_mw, ask_depth_mw)
+
+    trade_volume_mw = np.random.poisson(6, n_minutes) + (urgency_factor * 28.0).astype(int)
+    trade_prices = mid_price + (ofi * (spread_eur / 2.0)) + np.random.normal(0, 0.08, n_minutes)
+    cumulative_volume = np.cumsum(trade_volume_mw)
+    vwap_eur = np.cumsum(trade_prices * trade_volume_mw) / np.maximum(cumulative_volume, 1e-6)
+
+    return pd.DataFrame({
+        "timestamp": timestamps,
+        "minutes_to_gate": np.round(time_to_gate, 0),
+        "best_bid": np.round(best_bid, 2),
+        "best_ask": np.round(best_ask, 2),
+        "mid_price": np.round(mid_price, 2),
+        "micro_price": np.round(micro_price, 2),
+        "spread_eur": np.round(spread_eur, 2),
+        "bid_depth_mw": np.round(bid_depth_mw, 1),
+        "ask_depth_mw": np.round(ask_depth_mw, 1),
+        "ofi": np.round(ofi, 3),
+        "traded_volume_mw": trade_volume_mw,
+        "trade_price_eur": np.round(trade_prices, 2),
+        "vwap_eur": np.round(vwap_eur, 2)
+    })
